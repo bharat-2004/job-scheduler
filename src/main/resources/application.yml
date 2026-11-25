@@ -1,0 +1,110 @@
+# One application, three roles: run with SPRING_PROFILES_ACTIVE=api | scheduler | worker
+# (comma-separate to run several roles in one JVM). Secrets come only from environment variables.
+
+spring:
+  application:
+    name: job-scheduler
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5437/jobscheduler}
+    username: ${DB_USER:jobscheduler}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate          # Flyway owns the schema (partitions and partial indexes need real SQL)
+    properties:
+      hibernate.jdbc.time_zone: UTC
+      hibernate.jdbc.batch_size: 100
+      hibernate.order_inserts: true
+      hibernate.order_updates: true
+
+  flyway:
+    placeholders:
+      retention_days: ${app.retention.days:30}
+      partitions_ahead_days: ${app.retention.partitions-ahead-days:7}
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:jobscheduler}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: simple   # RabbitRunPublisher waits for broker confirms
+    listener:
+      simple:
+        prefetch: 1                  # never take more messages than free slots
+        acknowledge-mode: auto       # ack after the listener returns, i.e. after the run finished
+        default-requeue-rejected: true
+        missing-queues-fatal: false
+
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+
+  task:
+    scheduling:
+      pool:
+        size: 2                      # minute tick and 10-second dispatcher can overlap
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    mail:
+      enabled: false
+
+logging:
+  pattern:
+    level: "%5p [job=%X{jobId:-} run=%X{runId:-}]"
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:}
+    ttl: 1h
+  storage:
+    endpoint: ${STORAGE_ENDPOINT:http://localhost:9000}
+    access-key: ${STORAGE_ACCESS_KEY:}
+    secret-key: ${STORAGE_SECRET_KEY:}
+    bucket: ${STORAGE_BUCKET:jobscheduler}
+  retention:
+    days: 30
+    partitions-ahead-days: 7
+  messaging:
+    consumer-timeout: 90m            # > Job.MAX_TIMEOUT (1h): the worker holds the message for the whole run
+  scheduler:
+    batch-size: 500
+    late-grace: 3m
+    stuck-run-grace: 60s
+    queued-expiry: 30m
+    dispatch-interval: 10s
+  worker:
+    hostname: ${HOSTNAME:local}
+    concurrency: ${WORKER_CONCURRENCY:5}
+    delay-alert-threshold: 5m
+    log-size-cap: 10MB
+    work-dir: ${WORKER_WORK_DIR:/tmp/jobscheduler}
+    docker:
+      host: ${DOCKER_HOST:unix:///var/run/docker.sock}
+      api-version: "1.44"
+    sandbox:
+      memory: 256MB
+      cpus: 0.5
+      pids-limit: 64
+      tmpfs-size: 64m
+      network: ${SANDBOX_NETWORK:jobscheduler-sandbox}
+      python-image: python:3.12-slim
+  notification:
+    from: scheduler@jobscheduler.local
